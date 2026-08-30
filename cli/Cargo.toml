@@ -1,0 +1,13 @@
+[package]
+name = "nvidia-smi-live"
+description = "Live-updating nvidia-smi with a minimal terminal UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nvidia-smi-live"
+path = "src/main.rs"
+
+[dependencies]
+nvidia-smi-live-core = { path = "../core" }

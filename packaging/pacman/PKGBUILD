@@ -1,0 +1,31 @@
+# Maintainer: apiplant <releases@apiplant.com>
+#
+# Built by the release workflow, which fills in the version and checksum and
+# publishes the resulting package to apiplant.github.io/pacman. It is not an
+# AUR manifest: the package is named `nvidia-smi-live` rather than
+# `nvidia-smi-live-bin` and carries no `provides`/`conflicts` pair.
+pkgname=nvidia-smi-live
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Live-updating nvidia-smi with a minimal terminal UI"
+arch=('x86_64')
+url="https://github.com/apiplant/nvidia-smi-live"
+license=('MIT')
+# libnvidia-ml.so.1 comes from the NVIDIA driver, which has no stable package
+# name to depend on; the binary fails cleanly at runtime without it.
+depends=()
+# The release archive holding the binary and the README. The workflow builds
+# the package before the release exists and drops the archive next to this
+# file, which makepkg picks up instead of downloading; the URL is what makes
+# the PKGBUILD work on its own once the release is published.
+source=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/nvidia-smi-live-v$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('@SHA_LINUX_X86_64@')
+# The release profile already strips symbols, and makepkg's strip pass on an
+# LTO'd binary buys nothing.
+options=('!strip' '!debug')
+
+package() {
+  local src="$srcdir/nvidia-smi-live-v$pkgver-x86_64-unknown-linux-gnu"
+  install -Dm755 "$src/nvidia-smi-live" "$pkgdir/usr/bin/nvidia-smi-live"
+  install -Dm644 "$src/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

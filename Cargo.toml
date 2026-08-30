@@ -1,15 +1,11 @@
-[package]
-name = "nvidia-smi-live"
+[workspace]
+resolver = "2"
+members = ["core", "cli", "web"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Live-updating nvidia-smi with a minimal terminal UI"
 license = "MIT"
-
-[[bin]]
-name = "nvidia-smi-live"
-path = "src/main.rs"
-
-[dependencies]
 
 [profile.release]
 opt-level = "z"

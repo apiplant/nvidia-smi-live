@@ -1,0 +1,623 @@
+name: release
+
+# Tag a version to cut a release:
+#
+#   git tag v0.x.0 && git push origin v0.x.0
+#
+# That builds the `nvidia-smi-live` binary for every supported platform and
+# attaches the archives, checksums, and distro packages to the GitHub release.
+#
+# NVML is a Linux driver interface, so the matrix is Linux only: there is no
+# macOS target and no Windows one.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (dry run: no release is published)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A release build is LTO + one codegen unit; the extra debug info earlier
+  # stages emit is stripped anyway.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  binaries:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # No NVIDIA driver on the runner and none needed: the binaries load
+      # `libnvidia-ml.so.1` with dlopen at runtime (see core/src/nvml.rs),
+      # so there is nothing to link against here and nothing recorded NEEDED.
+      #
+      # Both binaries from one workspace: the CLI and the web server. The
+      # archive carries both, and each package installs the one it names.
+      - name: Build
+        run: |
+          cargo build --release --locked --bin nvidia-smi-live --target ${{ matrix.target }}
+          cargo build --release --locked --bin nvidia-smi-live-web --target ${{ matrix.target }}
+
+      # One archive per target, named after it, holding both binaries and the
+      # README — enough to unpack anywhere and run.
+      - name: Package
+        shell: bash
+        run: |
+          name="nvidia-smi-live-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/nvidia-smi-live" "$name/"
+          cp "target/${{ matrix.target }}/release/nvidia-smi-live-web" "$name/"
+          cp README.md "$name/"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            nvidia-smi-live-*.tar.gz
+            nvidia-smi-live-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # Repackaging, not building: both .debs and the pacman package are assembled
+  # on one runner from the archives the `binaries` job produced, because
+  # putting an already-built binary into an ar or zst archive is
+  # architecture-independent work.
+  packages:
+    name: distro packages
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Build the Debian packages
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p debs
+
+          build() { # <debian arch> <rust target>
+            local arch="$1" triple="$2"
+
+            tar xzf "dist/nvidia-smi-live-${GITHUB_REF_NAME}-$triple.tar.gz"
+            local src="nvidia-smi-live-${GITHUB_REF_NAME}-$triple"
+
+            # Two packages from one archive: the CLI and the web server.
+            # Each gets its own root, control file and installed size.
+            for pkg in nvidia-smi-live nvidia-smi-live-web; do
+              local root="stage/$pkg-$arch" control="packaging/debian/control"
+              [ "$pkg" = nvidia-smi-live-web ] && control="packaging/debian/control-web"
+
+              install -Dm755 "$src/$pkg" "$root/usr/bin/$pkg"
+              install -Dm644 "$src/README.md" "$root/usr/share/doc/$pkg/README.md"
+              if [ "$pkg" = nvidia-smi-live-web ]; then
+                install -Dm644 packaging/systemd/nvidia-smi-live-web.service \
+                  "$root/usr/lib/systemd/system/nvidia-smi-live-web.service"
+              fi
+
+              # dpkg reports installed size in KiB, and dpkg-deb does not work
+              # it out on its own — a missing or wrong value is what makes
+              # `apt` mis-report what an install will cost.
+              local size
+              size=$(du -ks "$root/usr" | cut -f1)
+
+              install -d "$root/DEBIAN"
+              sed -e "s/@VERSION@/$version/" \
+                  -e "s/@ARCH@/$arch/" \
+                  -e "s/@INSTALLED_SIZE@/$size/" \
+                  "$control" > "$root/DEBIAN/control"
+
+              if grep -qE '@[A-Z_]+@' "$root/DEBIAN/control"; then
+                echo "::error::unsubstituted placeholder in the control file" >&2
+                exit 1
+              fi
+
+              # Everything ships as root:root regardless of who the runner is.
+              dpkg-deb --root-owner-group --build "$root" \
+                "debs/${pkg}_${version}-1_${arch}.deb"
+            done
+          }
+
+          build amd64 x86_64-unknown-linux-gnu
+          build arm64 aarch64-unknown-linux-gnu
+
+          cd debs
+          for deb in *.deb; do shasum -a 256 "$deb" > "$deb.sha256"; done
+
+      # Only x86_64: the pacman repository serves that one architecture, and an
+      # aarch64 package would need either an arm runner or emulation for no
+      # audience. The Arch tooling comes from a container rather than the
+      # runner, so this stays a step in the same job as the .debs.
+      - name: Build the pacman packages
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p pkg
+          sha=$(sha256sum "dist/nvidia-smi-live-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" | cut -d' ' -f1)
+
+          # Two packages from one archive: the CLI and the web server. Each
+          # PKGBUILD names its local copy of the archive after itself, so the
+          # same tarball is placed under both names.
+          for base in PKGBUILD PKGBUILD-web; do
+            sed \
+              -e "s/@VERSION@/$version/g" \
+              -e "s/@SHA_LINUX_X86_64@/$sha/" \
+              "packaging/pacman/$base" > "pkg/$base"
+
+            if grep -qE '@[A-Z_]+@' "pkg/$base"; then
+              echo "::error::unsubstituted placeholder in $base" >&2
+              grep -nE '@[A-Z_]+@' "pkg/$base" >&2
+              exit 1
+            fi
+          done
+
+          # The release does not exist yet, so the archive is placed under the
+          # names the source lines give it: makepkg checksums what is already
+          # there instead of fetching the URL.
+          cp "dist/nvidia-smi-live-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+             "pkg/nvidia-smi-live-$version-x86_64.tar.gz"
+          cp "dist/nvidia-smi-live-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+             "pkg/nvidia-smi-live-web-$version-x86_64.tar.gz"
+          cp packaging/systemd/nvidia-smi-live-web.service pkg/nvidia-smi-live-web.service
+
+          # makepkg refuses to run as root, so the build runs as an unprivileged
+          # user inside the container — and the tree is handed back to the
+          # runner's own uid afterwards, or the steps below cannot write to it.
+          docker run --rm -v "$PWD/pkg:/pkg" -e "OWNER=$(id -u):$(id -g)" \
+            archlinux:base-devel bash -c '
+              set -eu
+              useradd -m builder
+              chown -R builder /pkg
+              su builder -c "cd /pkg && makepkg --cleanbuild --force --nodeps -p PKGBUILD"
+              su builder -c "cd /pkg && makepkg --cleanbuild --force --nodeps -p PKGBUILD-web"
+              chown -R "$OWNER" /pkg
+            '
+
+          [ -f "pkg/nvidia-smi-live-$version-1-x86_64.pkg.tar.zst" ]
+          [ -f "pkg/nvidia-smi-live-web-$version-1-x86_64.pkg.tar.zst" ]
+          cd pkg
+          shasum -a 256 "nvidia-smi-live-$version-1-x86_64.pkg.tar.zst" \
+            > "nvidia-smi-live-$version-1-x86_64.pkg.tar.zst.sha256"
+          shasum -a 256 "nvidia-smi-live-web-$version-1-x86_64.pkg.tar.zst" \
+            > "nvidia-smi-live-web-$version-1-x86_64.pkg.tar.zst.sha256"
+
+      # A package that installs but declares the wrong architecture, or that
+      # quietly lost the binary, is worth catching before it is a release asset.
+      - name: Check
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dpkg-deb --info "debs/nvidia-smi-live_${version}-1_amd64.deb"
+          dpkg-deb --contents "debs/nvidia-smi-live_${version}-1_amd64.deb" | grep -q './usr/bin/nvidia-smi-live'
+          [ "$(dpkg-deb --field "debs/nvidia-smi-live_${version}-1_arm64.deb" Architecture)" = arm64 ]
+
+          dpkg-deb --info "debs/nvidia-smi-live-web_${version}-1_amd64.deb"
+          dpkg-deb --contents "debs/nvidia-smi-live-web_${version}-1_amd64.deb" | grep -q './usr/bin/nvidia-smi-live-web'
+          dpkg-deb --contents "debs/nvidia-smi-live-web_${version}-1_amd64.deb" | grep -q './usr/lib/systemd/system/nvidia-smi-live-web.service'
+          [ "$(dpkg-deb --field "debs/nvidia-smi-live-web_${version}-1_arm64.deb" Architecture)" = arm64 ]
+
+          # The runner is amd64, so only that one can actually be installed and
+          # run — which is the check that matters: `--version` proves the binary
+          # survived the round trip. NVML is loaded with dlopen at first use,
+          # so `--version` runs fine with no driver present.
+          sudo dpkg -i "debs/nvidia-smi-live_${version}-1_amd64.deb" "debs/nvidia-smi-live-web_${version}-1_amd64.deb" || sudo apt-get install -fy
+          [ "$(nvidia-smi-live --version)" = "nvidia-smi-live $version" ]
+          [ "$(nvidia-smi-live-web --version)" = "nvidia-smi-live-web $version" ]
+          sudo dpkg -r nvidia-smi-live nvidia-smi-live-web
+
+          # The pacman packages cannot be installed on the runner, but their
+          # metadata and contents can be read back out of the archives.
+          docker run --rm -v "$PWD/pkg:/pkg" archlinux:base-devel bash -c "
+            set -eu
+            for name in nvidia-smi-live nvidia-smi-live-web; do
+              pkg=/pkg/\$name-$version-1-x86_64.pkg.tar.zst
+              bsdtar -xOf \"\$pkg\" .PKGINFO | grep -qx \"pkgname = \$name\"
+              bsdtar -xOf \"\$pkg\" .PKGINFO | grep -qx 'pkgver = $version-1'
+              bsdtar -tf \"\$pkg\" | grep -qx \"usr/bin/\$name\"
+            done
+          "
+
+      # Two artifacts rather than one: the `apt` job wants only the .debs and
+      # the `pacman` job only the .pkg.tar.zst, and both download into a flat
+      # directory.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-packages
+          path: |
+            debs/*.deb
+            debs/*.deb.sha256
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacman-package
+          path: |
+            pkg/*.pkg.tar.zst
+            pkg/*.pkg.tar.zst.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: [binaries, packages]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: debian-packages
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: pacman-package
+
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Binaries
+
+            | platform | archive |
+            | --- | --- |
+            | Linux x86_64 | `nvidia-smi-live-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz` |
+            | Linux aarch64 | `nvidia-smi-live-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz` |
+
+            ## Debian packages
+
+            ```
+            sudo dpkg -i nvidia-smi-live_${{ steps.version.outputs.version }}-1_amd64.deb
+            sudo dpkg -i nvidia-smi-live-web_${{ steps.version.outputs.version }}-1_amd64.deb
+            ```
+
+            | platform | package |
+            | --- | --- |
+            | Debian/Ubuntu amd64 | `nvidia-smi-live_${{ steps.version.outputs.version }}-1_amd64.deb` |
+            | Debian/Ubuntu arm64 | `nvidia-smi-live_${{ steps.version.outputs.version }}-1_arm64.deb` |
+            | Debian/Ubuntu amd64 (web) | `nvidia-smi-live-web_${{ steps.version.outputs.version }}-1_amd64.deb` |
+            | Debian/Ubuntu arm64 (web) | `nvidia-smi-live-web_${{ steps.version.outputs.version }}-1_arm64.deb` |
+
+            They need a working NVIDIA driver at runtime and glibc 2.35 —
+            Debian 12 (bookworm) or newer, Ubuntu 22.04 or newer. The web
+            package ships a systemd unit: `sudo systemctl enable --now
+            nvidia-smi-live-web` serves the monitor at http://127.0.0.1:7680.
+
+            ## Arch packages
+
+            ```
+            sudo pacman -U nvidia-smi-live-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst
+            sudo pacman -U nvidia-smi-live-web-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst
+            ```
+
+            | platform | package |
+            | --- | --- |
+            | Arch Linux x86_64 | `nvidia-smi-live-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst` |
+            | Arch Linux x86_64 (web) | `nvidia-smi-live-web-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst` |
+
+            The same package is published to the signed pacman repository at
+            `apiplant.github.io/pacman`, which is the way to get updates with
+            `pacman -Syu` — see `packaging/README.md` for the one-time setup.
+
+            Each archive and package has a matching `.sha256` file.
+
+  # Every repository publish runs after `release`: the Homebrew formula points
+  # at the release archives by URL, and the apt and pacman repositories should
+  # only start serving a version the release itself already has — hence
+  # `needs: release` rather than running alongside it.
+  # Each publish job is guarded on its credential: a fork, or this repository
+  # before the secrets are set, skips it instead of failing the run.
+  homebrew:
+    name: homebrew tap
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Render the formulas
+        if: env.TAP_TOKEN != ''
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha() { shasum -a 256 "dist/nvidia-smi-live-${GITHUB_REF_NAME}-$1.tar.gz" | cut -d' ' -f1; }
+
+          # Two formulas from one archive: the CLI and the web server.
+          for base in nvidia-smi-live nvidia-smi-live-web; do
+            sed \
+              -e "s/@VERSION@/$version/g" \
+              -e "s/@SHA_LINUX_X86_64@/$(sha x86_64-unknown-linux-gnu)/" \
+              -e "s/@SHA_LINUX_ARM64@/$(sha aarch64-unknown-linux-gnu)/" \
+              "packaging/homebrew/${base}.rb" > "/tmp/${base}.rb"
+
+            # A leftover placeholder means an archive was missing and `sha`
+            # returned nothing — publishing that formula would break `brew
+            # install` for everyone on that platform.
+            if grep -qE '@[A-Z_]+@' "/tmp/${base}.rb"; then
+              echo "::error::unsubstituted placeholder in ${base}.rb" >&2
+              grep -nE '@[A-Z_]+@' "/tmp/${base}.rb" >&2
+              exit 1
+            fi
+          done
+
+      - name: Push to apiplant/homebrew-tap
+        if: env.TAP_TOKEN != ''
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/apiplant/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp /tmp/nvidia-smi-live.rb tap/Formula/nvidia-smi-live.rb
+          cp /tmp/nvidia-smi-live-web.rb tap/Formula/nvidia-smi-live-web.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/nvidia-smi-live.rb Formula/nvidia-smi-live-web.rb
+          # Re-running a release for the same tag is a no-op rather than an error.
+          git diff --cached --quiet && exit 0
+          git commit -m "nvidia-smi-live $version"
+          git push
+
+  # The apt repository is cumulative: the whole pool is cloned, the new
+  # packages are added to it, and every index is regenerated over the result.
+  # Regenerating from only the new .debs would publish a Packages file that
+  # drops every earlier version, which is how `apt install nvidia-smi-live=0.1.0`
+  # stops working.
+  apt:
+    name: apt repository
+    needs: [packages, release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # dpkg-scanpackages and apt-ftparchive are Debian's own tools; the runner
+    # has apt but not dpkg-dev, and a container is cheaper than installing it.
+    container: debian:bookworm
+    env:
+      APT_REPO_TOKEN: ${{ secrets.APT_REPO_TOKEN }}
+    steps:
+      - name: Install the archive tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends dpkg-dev apt-utils gnupg git ca-certificates
+
+      - uses: actions/checkout@v4
+        with:
+          path: source
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: debs
+          name: debian-packages
+
+      - name: Import the signing key
+        if: env.APT_REPO_TOKEN != ''
+        env:
+          GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$GPG_KEY" ]; then
+            echo "::error::APT_REPO_TOKEN is set but APT_GPG_PRIVATE_KEY is not" >&2
+            exit 1
+          fi
+          printf '%s\n' "$GPG_KEY" | gpg --batch --import
+          # The key id is needed explicitly: a CI keyring with one secret key
+          # still has no default, and an unsigned Release is one apt refuses.
+          gpg --list-secret-keys --with-colons \
+            | awk -F: '/^sec:/ { print $5; exit }' > /tmp/keyid
+          test -s /tmp/keyid
+
+      - name: Add the packages to the pool
+        if: env.APT_REPO_TOKEN != ''
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${APT_REPO_TOKEN}@github.com/apiplant/apt.git" repo
+
+          # `pool/main/n/nvidia-smi-live/` is the layout apt expects: component,
+          # then the first letter of the source package, then the package.
+          mkdir -p repo/pool/main/n/nvidia-smi-live
+          cp debs/*.deb repo/pool/main/n/nvidia-smi-live/
+
+          size=$(du -sm repo/pool | cut -f1)
+          if [ "$size" -gt 700 ]; then
+            echo "::warning::the apt pool is ${size}MB; GitHub Pages stops at 1GB." \
+                 "Prune old versions from apiplant/apt or move the pool elsewhere."
+          fi
+
+      - name: Generate the indices
+        if: env.APT_REPO_TOKEN != ''
+        working-directory: repo
+        run: |
+          for arch in amd64 arm64; do
+            dir="dists/stable/main/binary-$arch"
+            mkdir -p "$dir"
+            # /dev/null as the override file: there is no Debian override
+            # database here, and dpkg-scanpackages insists on the argument.
+            dpkg-scanpackages --arch "$arch" pool /dev/null > "$dir/Packages"
+            gzip -9kf "$dir/Packages"
+            test -s "$dir/Packages"
+          done
+
+          # Written outside the tree and moved in: apt-ftparchive checksums
+          # every file under dists/stable, and a Release file it is midway
+          # through writing is one of them.
+          apt-ftparchive -c ../source/packaging/apt/apt-ftparchive.conf \
+            release dists/stable > /tmp/Release
+          mv /tmp/Release dists/stable/Release
+
+      - name: Sign and publish
+        if: env.APT_REPO_TOKEN != ''
+        working-directory: repo
+        env:
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          keyid=$(cat /tmp/keyid)
+
+          # A passphrase-less key needs no --passphrase, and passing an empty
+          # one to gpg is an error rather than a no-op. Held in the positional
+          # parameters rather than an array: this job runs in a container, where
+          # the step shell is plain sh and `pass=()` is a syntax error.
+          set --
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            set -- --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE"
+          fi
+
+          # Both signatures: InRelease is what apt fetches, Release.gpg is what
+          # older clients and mirroring tools still look for.
+          gpg --batch --yes "$@" --local-user "$keyid" \
+            --clearsign -o dists/stable/InRelease dists/stable/Release
+          gpg --batch --yes "$@" --local-user "$keyid" \
+            --detach-sign --armor -o dists/stable/Release.gpg dists/stable/Release
+
+          # The keyring users install, dearmored so it can be dropped into
+          # /usr/share/keyrings and named by `signed-by` as-is.
+          rm -f nvidia-smi-live-archive-keyring.gpg
+          gpg --export "$keyid" > apiplant.gpg
+
+          # GitHub Pages runs Jekyll otherwise, which would rewrite parts of a
+          # tree that has to be served byte-for-byte.
+          touch .nojekyll
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "nvidia-smi-live $version"
+          git push
+
+  # The pacman repository is cumulative too, but its database only references
+  # the newest build of each package name. The new package file is copied into
+  # the architecture directory, signed, and added to the repository database.
+  # x86_64 only, matching what the `packages` job builds.
+  pacman:
+    name: pacman repository
+    needs: [release, packages]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      PACMAN_REPO_TOKEN: ${{ secrets.PACMAN_REPO_TOKEN }}
+    steps:
+      - name: Install the archive tools
+        run: pacman -Sy --noconfirm --needed git gnupg ca-certificates
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: pacman-package
+
+      - name: Import the signing key
+        if: env.PACMAN_REPO_TOKEN != ''
+        env:
+          GPG_KEY: ${{ secrets.PACMAN_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$GPG_KEY" ]; then
+            echo "::error::PACMAN_REPO_TOKEN is set but PACMAN_GPG_PRIVATE_KEY is not" >&2
+            exit 1
+          fi
+          printf '%s\n' "$GPG_KEY" | gpg --batch --import
+          gpg --list-secret-keys --with-colons \
+            | awk -F: '/^sec:/ { print $5; exit }' > /tmp/keyid
+          test -s /tmp/keyid
+
+      - name: Add the packages to the pool
+        if: env.PACMAN_REPO_TOKEN != ''
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${PACMAN_REPO_TOKEN}@github.com/apiplant/pacman.git" repo
+
+          mkdir -p repo/x86_64
+          cp dist/*.pkg.tar.zst repo/x86_64/
+
+      - name: Sign, index and publish
+        if: env.PACMAN_REPO_TOKEN != ''
+        working-directory: repo
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PACMAN_GPG_PASSPHRASE }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          keyid=$(cat /tmp/keyid)
+
+          sign() {
+            rm -f "$1.sig"
+            if [ -n "$GPG_PASSPHRASE" ]; then
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$keyid" --detach-sign "$1"
+            else
+              gpg --batch --yes --local-user "$keyid" --detach-sign "$1"
+            fi
+          }
+
+          pkgs=$(printf '%s\n' "$PWD/x86_64"/*.pkg.tar.zst)
+          for pkg in $pkgs; do
+            sign "$pkg"
+          done
+
+          repo-add --include-sigs "x86_64/apiplant.db.tar.zst" $pkgs
+
+          # repo-add leaves apiplant.db and apiplant.files as symlinks to the
+          # .tar.zst files. git stores a symlink as its target path, and GitHub
+          # Pages serves that back as a plain text file — so `pacman -Sy` would
+          # download the string "apiplant.db.tar.zst" instead of a database.
+          # Real copies are what gets committed.
+          for name in apiplant.db apiplant.files; do
+            cp --remove-destination "x86_64/$name.tar.zst" "x86_64/$name"
+          done
+
+          sign "x86_64/apiplant.db"
+          sign "x86_64/apiplant.files"
+
+          rm -f nvidia-smi-live.gpg
+          gpg --armor --export "$keyid" > apiplant.gpg
+          touch .nojekyll
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "nvidia-smi-live $version"
+          git push

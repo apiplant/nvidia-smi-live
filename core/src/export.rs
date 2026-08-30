@@ -73,6 +73,10 @@ pub fn snapshot_to_json(snap: &Snapshot, filter: Option<&str>) -> String {
             "      \"fanSpeedPct\": {},\n",
             g.fan.unwrap_or(0)
         ));
+        out.push_str(&format!(
+            "      \"driver\": \"{}\",\n",
+            json_escape(&g.driver)
+        ));
         out.push_str("      \"processes\": [\n");
         for (j, p) in procs.iter().enumerate() {
             out.push_str("        {\n");

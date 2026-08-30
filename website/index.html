@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nvidia-smi-live — nvidia-smi, live</title>
+    <meta
+      name="description"
+      content="nvidia-smi-live is a live-updating nvidia-smi with a minimal terminal UI: one small Rust binary, over 3× smaller than nvidia-smi itself."
+    />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://nvidia-smi-live.pages.dev/" />
+    <meta property="og:site_name" content="nvidia-smi-live" />
+    <meta property="og:title" content="nvidia-smi-live — nvidia-smi, live" />
+    <meta
+      property="og:description"
+      content="A live-updating nvidia-smi with a minimal terminal UI. One small Rust binary, over 3× smaller than nvidia-smi."
+    />
+    <meta property="og:url" content="https://nvidia-smi-live.pages.dev/" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="nvidia-smi-live — nvidia-smi, live" />
+    <meta
+      name="twitter:description"
+      content="A live-updating nvidia-smi with a minimal terminal UI. One small Rust binary, over 3× smaller than nvidia-smi."
+    />
+    <meta name="theme-color" content="#171a21" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f2f5fa" media="(prefers-color-scheme: light)" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2327282f'/%3E%3Crect x='8' y='8' width='16' height='16' rx='3' fill='none' stroke='%234a9eff' stroke-width='2'/%3E%3Cpath d='M12 5v3M16 5v3M20 5v3M12 24v3M16 24v3M20 24v3M5 12h3M5 16h3M5 20h3M24 12h3M24 16h3M24 20h3' stroke='%23ffffff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+    <script>
+      // Set the theme before first paint so the page never flashes the wrong one.
+      (function () {
+        try {
+          var stored = localStorage.getItem("nvidia-smi-live-theme");
+          var light =
+            stored === "light" ||
+            (!stored && window.matchMedia("(prefers-color-scheme: light)").matches);
+          if (light) document.documentElement.classList.add("light");
+          document.documentElement.style.colorScheme = light ? "light" : "dark";
+        } catch (_) {
+          /* private mode: dark is the default anyway */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

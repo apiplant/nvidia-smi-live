@@ -1,0 +1,21 @@
+Package: nvidia-smi-live
+Version: @VERSION@-1
+Architecture: @ARCH@
+Maintainer: apiplant <releases@apiplant.com>
+Homepage: https://github.com/apiplant/nvidia-smi-live
+Section: utils
+Priority: optional
+Installed-Size: @INSTALLED_SIZE@
+Description: Live-updating nvidia-smi with a minimal terminal UI
+ nvidia-smi-live re-renders every GPU on a timer — utilization, VRAM,
+ temperature, power and fan — as a minimal terminal UI, with a per-process
+ memory table laid out like nvidia-smi's. It also exports the same snapshot
+ as JSON, NDJSON or a Prometheus textfile.
+ .
+ The binary is under 400 KB and links only libc and libgcc_s. It loads
+ libnvidia-ml.so.1 from the NVIDIA driver at runtime via dlopen. It needs a
+ working NVIDIA driver to do anything useful; there is no driver dependency
+ to declare, because
+ the driver packages differ per vendor and generation. It is built against
+ glibc 2.35, so it needs Debian 12 (bookworm) or newer, or Ubuntu 22.04 or
+ newer.

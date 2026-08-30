@@ -1,0 +1,8 @@
+[package]
+name = "nvidia-smi-live-core"
+description = "Shared data model and NVML collection for nvidia-smi-live"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

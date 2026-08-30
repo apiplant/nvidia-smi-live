@@ -1,0 +1,40 @@
+# System service: run nvidia-smi-live-web from the system manager so the
+# monitor keeps updating while no one is logged in.
+#
+# Install:
+#   sudo cp nvidia-smi-live-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nvidia-smi-live-web
+#
+# The Debian and Arch packages drop this file at
+# /usr/lib/systemd/system/nvidia-smi-live-web.service, which `systemctl`
+# already looks in — no copy needed, just
+# `sudo systemctl enable --now nvidia-smi-live-web`.
+#
+# The server binds 127.0.0.1:7680 by default, so the monitor stays reachable
+# only from the machine itself. To expose it on the network, add
+#   ExecStart=/usr/bin/nvidia-smi-live-web --host 0.0.0.0
+# to an override drop-in rather than editing the packaged unit — and make sure
+# the port is firewalled, since the page shows live system state.
+# To change the port, add
+#   ExecStart=/usr/bin/nvidia-smi-live-web --port 8080
+# to an override drop-in instead.
+[Unit]
+Description=nvidia-smi-live-web - live GPU monitor for the browser
+After=network.target
+
+[Service]
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/nvidia-smi-live-web
+Restart=on-failure
+RestartSec=2
+
+# No filesystem access beyond what NVML needs, no new privileges, no network
+# beyond the loopback bind the server already does.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

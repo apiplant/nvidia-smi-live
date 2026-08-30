@@ -1,0 +1,16 @@
+[package]
+name = "nvidia-smi-live-web"
+description = "Minimal web server showing live nvidia-smi data in a Solid.js frontend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nvidia-smi-live-web"
+path = "src/main.rs"
+
+[dependencies]
+ntex = { version = "2", features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nvidia-smi-live-core = { path = "../core" }

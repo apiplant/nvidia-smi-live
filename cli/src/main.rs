@@ -1,12 +1,10 @@
 //! nvidia-smi-live: live-updating nvidia-smi with a minimal terminal UI.
 
 mod config;
-mod export;
-mod gpu;
-mod nvml;
 mod render;
 mod term;
-mod timefmt;
+
+use nvidia_smi_live_core::{export, nvml};
 
 use std::time::{Duration, Instant};
 
@@ -85,11 +83,12 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
 
 fn run_tui(interval_ms: u64, filter: Option<String>) -> Result<(), String> {
     let nvml = nvml::Nvml::new()?;
-    let term = term::Term::enter();
+    let mut term = term::Term::enter();
     let interval = Duration::from_millis(interval_ms);
     let mut showing_error = false;
     let (mut theme, mut unit, mut temp) = config::load();
     loop {
+        term.poll_resize();
         match nvml.snapshot() {
             Ok(snap) => {
                 if snap.gpus.is_empty() {
@@ -121,6 +120,11 @@ fn run_tui(interval_ms: u64, filter: Option<String>) -> Result<(), String> {
         let deadline = Instant::now() + interval;
         loop {
             if Instant::now() >= deadline {
+                break;
+            }
+            if term.poll_resize() {
+                term.clear();
+                showing_error = false;
                 break;
             }
             if let Some(key) = term.read_key() {

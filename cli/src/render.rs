@@ -1,8 +1,8 @@
 //! Frame rendering: per-GPU bar panels and a process table, with a switchable
 //! color theme and a footer status line (driver info + current date/time).
 
-use crate::gpu::Snapshot;
-use crate::timefmt;
+use nvidia_smi_live_core::gpu::Snapshot;
+use nvidia_smi_live_core::timefmt;
 
 mod color {
     pub fn fg(r: u8, g: u8, b: u8) -> String { format!("\x1b[38;2;{r};{g};{b}m") }
@@ -157,7 +157,18 @@ impl TempUnit {
     }
 }
 
-const W: usize = 91; // total frame width, same as nvidia-smi
+const W: usize = 91; // fallback frame width when the terminal size is unknown
+
+/// Frame width for the current terminal: fill the terminal, down to a legible
+/// minimum and up to a sane maximum, or fall back to `W` when the size is
+/// unknown.
+fn frame_w(cols: i64) -> usize {
+    if cols <= 0 {
+        W
+    } else {
+        (cols as usize).clamp(60, 240)
+    }
+}
 
 fn repeat(c: char, n: usize) -> String {
     c.to_string().repeat(n)
@@ -266,19 +277,19 @@ fn fmt_temp(c: i64, unit: TempUnit) -> String {
 }
 
 // --- wide box lines ---
-fn wide_top(p: &Palette) -> String {
-    with_bg(format!("{}┌{}┐", fg(p.border_hi), repeat('─', W - 2)), p)
+fn wide_top(p: &Palette, w: usize) -> String {
+    with_bg(format!("{}┌{}┐", fg(p.border_hi), repeat('─', w - 2)), p)
 }
-fn wide_eq(p: &Palette) -> String {
-    with_bg(format!("{}├{}┤", fg(p.border), repeat('═', W - 2)), p)
+fn wide_eq(p: &Palette, w: usize) -> String {
+    with_bg(format!("{}├{}┤", fg(p.border), repeat('═', w - 2)), p)
 }
-fn wide_bot(p: &Palette) -> String {
-    with_bg(format!("{}└{}┘", fg(p.border_hi), repeat('─', W - 2)), p)
+fn wide_bot(p: &Palette, w: usize) -> String {
+    with_bg(format!("{}└{}┘", fg(p.border_hi), repeat('─', w - 2)), p)
 }
-/// Wide content row; `inner` may contain inline colors, padded to W-2.
-fn wide_row(inner: &str, p: &Palette) -> String {
+/// Wide content row; `inner` may contain inline colors, padded to w-2.
+fn wide_row(inner: &str, p: &Palette, w: usize) -> String {
     let b = fg(p.border);
-    with_bg(format!("{}│{}{}│", b, pad_visible(inner, W - 2), b), p)
+    with_bg(format!("{}│{}{}│", b, pad_visible(inner, w - 2), b), p)
 }
 
 fn bar_chars(pct: f64, w: usize) -> (String, String) {
@@ -291,18 +302,25 @@ fn bar_chars(pct: f64, w: usize) -> (String, String) {
 type BarRow<'a> = (&'a str, f64, (u8, u8, u8), String);
 
 /// The bar panel for one GPU: utilization, VRAM, temperature, power, fan.
-fn bar_box(g: &crate::gpu::Gpu, box_w: usize, unit: MemUnit, temp: TempUnit, p: &Palette) -> Vec<String> {
+fn bar_box(g: &nvidia_smi_live_core::gpu::Gpu, box_w: usize, unit: MemUnit, temp: TempUnit, p: &Palette) -> Vec<String> {
     let inner = box_w - 2;
     let bar_w = (box_w - 43).max(10);
     let mut out = Vec::new();
     let bhi = fg(p.border_hi);
+    let idx_label = format!("(GPU #{})", g.index);
+    let content = format!("{}  {}", g.name, idx_label);
+    let pad_w = inner - 2;
+    let extra = if content.len() < pad_w { pad_w - content.len() } else { 0 };
     out.push(with_bg(format!("{}┌{}┐", bhi, repeat('─', inner)), p));
     out.push(with_bg(
         format!(
-            "{}│ {}{}{} │",
+            "{}│ {}{}{}{}{}{} │",
             fg(p.border),
             fg(p.accent),
-            pad(&format!("GPU {}  {}", g.index, g.name), inner - 2),
+            g.name,
+            fg(p.dim),
+            format!("  {}", idx_label),
+            " ".repeat(extra),
             fg(p.border)
         ),
         p,
@@ -378,19 +396,14 @@ fn bar_box(g: &crate::gpu::Gpu, box_w: usize, unit: MemUnit, temp: TempUnit, p: 
 }
 
 /// The process table, laid out like nvidia-smi's.
-fn proc_table(snap: &Snapshot, filter: Option<&str>, unit: MemUnit, p: &Palette) -> Vec<String> {
+fn proc_table(snap: &Snapshot, filter: Option<&str>, unit: MemUnit, p: &Palette, w: usize) -> Vec<String> {
     let mut out = Vec::new();
-    out.push(wide_top(p));
-    out.push(wide_row(&format!("{} Processes:", fg(p.accent)), p));
+    out.push(wide_top(p, w));
+    out.push(wide_row(&format!("{} Processes:", fg(p.accent)), p, w));
     let dim = fg(p.dim);
-    out.push(wide_row(
-        &format!(
-            "{}  GPU   GI   CI              PID   Type   Process name                        GPU Memory ",
-            dim
-        ),
-        p,
-    ));
-    out.push(wide_eq(p));
+    let header = "  GPU   GI   CI              PID   Type   Process name                        GPU Memory ";
+    out.push(wide_row(&format!("{}{}", dim, trunc(header, w - 2)), p, w));
+    out.push(wide_eq(p, w));
     for pr in &snap.procs {
         if let Some(f) = filter {
             if !pr.name.to_lowercase().contains(&f.to_lowercase()) {
@@ -407,7 +420,8 @@ fn proc_table(snap: &Snapshot, filter: Option<&str>, unit: MemUnit, p: &Palette)
             .map(|m| fmt_mem(m, unit))
             .unwrap_or_else(|| "N/A".into());
         let mem_w = mem.chars().count();
-        let name_w = (44 - mem_w).max(1);
+        // Fixed columns before the process name occupy 45 cells of the inner width.
+        let name_w = (w.saturating_sub(2 + 45 + mem_w)).max(1);
         let row = format!(
             "{}│{}{:>5}{}{:>6}{}{:>5}{}{:>16}{}{:>7}{}   {}  {}{}{} │",
             fg(p.border),
@@ -429,7 +443,7 @@ fn proc_table(snap: &Snapshot, filter: Option<&str>, unit: MemUnit, p: &Palette)
         );
         out.push(with_bg(&row, p));
     }
-    out.push(wide_bot(p));
+    out.push(wide_bot(p, w));
     out
 }
 
@@ -440,18 +454,18 @@ fn push_lines(out: &mut String, lines: &[String]) {
     }
 }
 
-fn hint_line(unit: MemUnit, theme: Theme, temp: TempUnit, p: &Palette) -> String {
+fn hint_line(unit: MemUnit, theme: Theme, temp: TempUnit, p: &Palette, w: usize) -> String {
     let line = format!(
         "  u: memory (now {})   t: theme (now {})   c: temp (now {})   q: quit",
         unit.label(),
         theme.label(),
         temp.label()
     );
-    format!("{}{}", fg(p.dim), pad_visible(&line, W))
+    format!("{}{}", fg(p.dim), pad_visible(&trunc(&line, w), w))
 }
 
 /// Footer status line: driver info on the left, current date/time on the right.
-fn footer_line(driver: &str, p: &Palette) -> String {
+fn footer_line(driver: &str, p: &Palette, w: usize) -> String {
     let ts = timefmt::timestamp_line();
     let left = format!(
         "{}NVIDIA-SMI {}  {}KMD Version: {}",
@@ -463,8 +477,8 @@ fn footer_line(driver: &str, p: &Palette) -> String {
     let right = format!("{}{}", fg(p.cyan), ts);
     let l = visible_len(&left);
     let r = visible_len(&right);
-    let gap = if l + r <= W {
-        " ".repeat(W - l - r)
+    let gap = if l + r <= w {
+        " ".repeat(w - l - r)
     } else {
         String::new()
     };
@@ -481,31 +495,27 @@ pub fn render_frame(
 ) -> String {
     let p = theme.palette();
     let mut out = String::new();
-    let box_w = if (60..W as i64).contains(&cols) {
-        cols as usize
-    } else {
-        W
-    };
+    let w = frame_w(cols);
     for g in &snap.gpus {
-        push_lines(&mut out, &bar_box(g, box_w, unit, temp, &p));
+        push_lines(&mut out, &bar_box(g, w, unit, temp, &p));
         out.push('\n');
     }
-    push_lines(&mut out, &proc_table(snap, filter, unit, &p));
+    push_lines(&mut out, &proc_table(snap, filter, unit, &p, w));
     out.push('\n');
-    out.push_str(&hint_line(unit, theme, temp, &p));
+    out.push_str(&hint_line(unit, theme, temp, &p, w));
     out.push('\n');
     let driver = snap
         .gpus
         .first()
         .map(|g| g.driver.clone())
         .unwrap_or_default();
-    out.push_str(&footer_line(&driver, &p));
+    out.push_str(&footer_line(&driver, &p, w));
     out
 }
 
-pub fn error_frame(msg: &str, _cols: i64, theme: Theme) -> String {
+pub fn error_frame(msg: &str, cols: i64, theme: Theme) -> String {
     let p = theme.palette();
-    let w = W;
+    let w = frame_w(cols);
     let mut out = String::new();
     out.push_str(&format!(
         "{}{}\n",
@@ -548,9 +558,16 @@ mod tests {
     #[test]
     fn frame_widths() {
         let p = Theme::Catppuccin.palette();
-        assert_eq!(visible_len(&wide_top(&p)), W);
-        assert_eq!(visible_len(&wide_eq(&p)), W);
-        assert_eq!(visible_len(&wide_bot(&p)), W);
+        assert_eq!(visible_len(&wide_top(&p, W)), W);
+        assert_eq!(visible_len(&wide_eq(&p, W)), W);
+        assert_eq!(visible_len(&wide_bot(&p, W)), W);
+        // Narrow terminals shrink the frame to the terminal width.
+        assert_eq!(visible_len(&wide_top(&p, 72)), 72);
+        assert_eq!(frame_w(72), 72);
+        assert_eq!(frame_w(40), 60);
+        assert_eq!(frame_w(0), W);
+        assert_eq!(frame_w(200), 200);
+        assert_eq!(frame_w(9999), 240);
 
         // Process table header row
         assert_eq!(

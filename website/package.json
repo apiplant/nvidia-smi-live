@@ -1,0 +1,26 @@
+{
+  "name": "nvidia-smi-live-website",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The nvidia-smi-live marketing site.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solidjs/router": "2.0.0-next.16",
+    "@solidjs/web": "2.0.0-rc.0",
+    "solid-js": "2.0.0-rc.0"
+  },
+  "devDependencies": {
+    "@solidjs/vite-plugin": "3.0.0-next.28",
+    "@tailwindcss/vite": "^4.3.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.5",
+    "wrangler": "^4.118.0"
+  }
+}

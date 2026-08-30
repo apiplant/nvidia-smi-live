@@ -1,0 +1,23 @@
+Package: nvidia-smi-live-web
+Version: @VERSION@-1
+Architecture: @ARCH@
+Maintainer: apiplant <releases@apiplant.com>
+Homepage: https://github.com/apiplant/nvidia-smi-live
+Section: utils
+Priority: optional
+Installed-Size: @INSTALLED_SIZE@
+Description: Live nvidia-smi monitor for the browser
+ nvidia-smi-live-web runs a minimal local web server that streams live GPU
+ snapshots — utilization, VRAM, temperature, power and fan, plus a
+ per-process memory table — to a static Solid.js page that updates in place.
+ It binds 127.0.0.1:7680 by default; pass --port to change it.
+ .
+ The binary links only libc and libgcc_s. It loads libnvidia-ml.so.1 from the
+ NVIDIA driver at runtime via dlopen. It needs a working NVIDIA driver to do
+ anything useful; there is no driver dependency to declare, because the
+ driver packages differ per
+ vendor and generation. It is built against glibc 2.35, so it needs Debian 12
+ (bookworm) or newer, or Ubuntu 22.04 or newer.
+ .
+ The package ships a systemd unit, nvidia-smi-live-web.service, which
+ `systemctl enable --now nvidia-smi-live-web` starts.

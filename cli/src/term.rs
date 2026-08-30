@@ -58,6 +58,14 @@ const TIOCGWINSZ: u64 = 0x5413;
 /// because the signal handler reads it.
 static ORIG: std::sync::OnceLock<Termios> = std::sync::OnceLock::new();
 static RAW: AtomicBool = AtomicBool::new(false);
+/// Set by the SIGWINCH handler when the terminal is resized.
+static RESIZED: AtomicBool = AtomicBool::new(true);
+
+const SIGWINCH: c_int = 28;
+
+extern "C" fn on_winch(_sig: c_int) {
+    RESIZED.store(true, Ordering::Relaxed);
+}
 
 /// SIGINT/SIGTERM handler: restore the terminal and leave the alt screen.
 /// Only async-signal-safe calls in here.
@@ -93,6 +101,8 @@ impl Term {
                 unsafe {
                     signal(2, handler as usize);
                     signal(15, handler as usize);
+                    let winch: extern "C" fn(c_int) = on_winch;
+                    signal(SIGWINCH, winch as usize);
                 }
                 raw = true;
             }
@@ -107,12 +117,32 @@ impl Term {
         Term { raw, cols }
     }
 
+    /// If a SIGWINCH arrived since the last call, re-read the terminal width
+    /// and return `true` so the caller can redraw immediately.
+    pub fn poll_resize(&mut self) -> bool {
+        if RESIZED.swap(false, Ordering::Relaxed) {
+            self.cols = Self::winsize_cols();
+            true
+        } else {
+            false
+        }
+    }
+
     fn winsize_cols() -> i64 {
         let mut ws: WinSize = unsafe { std::mem::zeroed() };
         if unsafe { ioctl(1, TIOCGWINSZ, &mut ws as *mut WinSize as *mut u8) } == 0 {
             ws.col as i64
         } else {
             0
+        }
+    }
+
+    /// Clear the whole screen (used after a resize to drop stale cells).
+    pub fn clear(&self) {
+        if self.raw {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x1b[2J\x1b[H");
+            let _ = out.flush();
         }
     }
 
