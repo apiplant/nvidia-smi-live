@@ -1,0 +1,22 @@
+[package]
+name = "nvidia-smi-live"
+version = "0.1.0"
+edition = "2021"
+description = "Live-updating nvidia-smi with a minimal terminal UI"
+license = "MIT"
+
+[[bin]]
+name = "nvidia-smi-live"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = false
+debug = false
+rpath = false
