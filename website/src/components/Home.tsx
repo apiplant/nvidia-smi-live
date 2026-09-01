@@ -267,13 +267,6 @@ cargo build --release
         <div class="min-w-0 space-y-5">
           <div>
             <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint">
-              Homebrew (Linuxbrew)
-            </p>
-            <CopyBlock command={homebrewCommands} />
-          </div>
-
-          <div>
-            <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint">
               Arch Linux / pacman
             </p>
             <CopyBlock command={pacmanCommands} />
@@ -288,6 +281,13 @@ cargo build --release
               Or pin a release with{" "}
               <code class="font-mono text-[0.9em]">sudo dpkg -i nvidia-smi-live_0.1.0-1_amd64.deb</code>.
             </p>
+          </div>
+
+          <div>
+            <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint">
+              Homebrew (Linuxbrew)
+            </p>
+            <CopyBlock command={homebrewCommands} />
           </div>
         </div>
       </div>
@@ -394,13 +394,6 @@ sudo systemctl enable --now nvidia-smi-live-web`;
         <div class="min-w-0 space-y-5">
           <div>
             <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint">
-              Homebrew (Linuxbrew)
-            </p>
-            <CopyBlock command={homebrewCommands} />
-          </div>
-
-          <div>
-            <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint">
               Arch Linux / pacman
             </p>
             <CopyBlock command={pacmanCommands} />
@@ -415,6 +408,13 @@ sudo systemctl enable --now nvidia-smi-live-web`;
               Or pin a release with{" "}
               <code class="font-mono text-[0.9em]">sudo dpkg -i nvidia-smi-live-web_0.1.0-1_amd64.deb</code>.
             </p>
+          </div>
+
+          <div>
+            <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-faint">
+              Homebrew (Linuxbrew)
+            </p>
+            <CopyBlock command={homebrewCommands} />
           </div>
         </div>
       </div>

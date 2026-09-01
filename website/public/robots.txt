@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://nvidia-smi-live.pages.dev/sitemap.xml
+Sitemap: https://nvidia-smi-live.apiplant.com/sitemap.xml
