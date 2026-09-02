@@ -629,18 +629,18 @@ dependencies = [
 
 [[package]]
 name = "nvidia-smi-live"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nvidia-smi-live-core",
 ]
 
 [[package]]
 name = "nvidia-smi-live-core"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "nvidia-smi-live-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ntex",
  "nvidia-smi-live-core",
