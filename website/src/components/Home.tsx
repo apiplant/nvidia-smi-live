@@ -578,8 +578,8 @@ export function Home() {
       </section>
 
       {/* Web */}
-      <section id="web" class="pb-20">
-        <div class="rounded-xl border border-line bg-surface p-6 sm:p-8">
+      <section id="web" class="border-t border-line pb-20 pt-16">
+        <div>
           <div class="flex flex-wrap items-center justify-between gap-2">
             <h2 class="text-2xl font-semibold tracking-tight text-ink">
               nvidia-smi-live<span class="text-accent">-web</span>
