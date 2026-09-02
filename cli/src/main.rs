@@ -102,6 +102,7 @@ fn run_tui(interval_ms: u64, filter: Option<String>) -> Result<(), String> {
                         &snap,
                         filter.as_deref(),
                         term.cols,
+                        term.rows,
                         unit,
                         theme,
                         temp,

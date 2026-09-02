@@ -489,6 +489,7 @@ pub fn render_frame(
     snap: &Snapshot,
     filter: Option<&str>,
     cols: i64,
+    rows: i64,
     unit: MemUnit,
     theme: Theme,
     temp: TempUnit,
@@ -501,14 +502,21 @@ pub fn render_frame(
         out.push('\n');
     }
     push_lines(&mut out, &proc_table(snap, filter, unit, &p, w));
-    out.push('\n');
-    out.push_str(&hint_line(unit, theme, temp, &p, w));
-    out.push('\n');
+    // Clear anything left below by a previously taller frame, then pin the
+    // controls hint and footer status line to the bottom of the window.
+    out.push_str("\x1b[J");
     let driver = snap
         .gpus
         .first()
         .map(|g| g.driver.clone())
         .unwrap_or_default();
+    if rows > 2 {
+        out.push_str(&format!("\x1b[{};1H", rows - 1));
+    } else {
+        out.push('\n');
+    }
+    out.push_str(&hint_line(unit, theme, temp, &p, w));
+    out.push('\n');
     out.push_str(&footer_line(&driver, &p, w));
     out
 }

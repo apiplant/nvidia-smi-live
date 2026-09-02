@@ -82,6 +82,7 @@ extern "C" fn on_signal(_sig: c_int) {
 pub struct Term {
     raw: bool,
     pub cols: i64,
+    pub rows: i64,
 }
 
 impl Term {
@@ -113,27 +114,29 @@ impl Term {
             let _ = out.write_all(enter);
             let _ = out.flush();
         }
-        let cols = Self::winsize_cols();
-        Term { raw, cols }
+        let (cols, rows) = Self::winsize();
+        Term { raw, cols, rows }
     }
 
     /// If a SIGWINCH arrived since the last call, re-read the terminal width
     /// and return `true` so the caller can redraw immediately.
     pub fn poll_resize(&mut self) -> bool {
         if RESIZED.swap(false, Ordering::Relaxed) {
-            self.cols = Self::winsize_cols();
+            let (cols, rows) = Self::winsize();
+            self.cols = cols;
+            self.rows = rows;
             true
         } else {
             false
         }
     }
 
-    fn winsize_cols() -> i64 {
+    fn winsize() -> (i64, i64) {
         let mut ws: WinSize = unsafe { std::mem::zeroed() };
         if unsafe { ioctl(1, TIOCGWINSZ, &mut ws as *mut WinSize as *mut u8) } == 0 {
-            ws.col as i64
+            (ws.col as i64, ws.row as i64)
         } else {
-            0
+            (0, 0)
         }
     }
 
